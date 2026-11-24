@@ -16,7 +16,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Check stream framing and serial evidence handling
-        run: python3 -IB test_xray_probe.py
+        run: |
+          python3 -IB test_xray_probe.py
+          python3 -IB test_xray_decision.py
       - name: Build one authenticated offline disk
         run: |
           test "$(uname -m)" = x86_64
@@ -31,5 +33,5 @@ jobs:
         if: always()
         run: |
           if test -s "$RUNNER_TEMP/xray.log"; then
-            { echo '### Transport observations'; echo '~~~text'; cat "$RUNNER_TEMP/xray.log"; echo '~~~'; } >> "$GITHUB_STEP_SUMMARY"
+            { echo '### Transport observations'; echo '~~~text'; grep -v '^XRAY_FRAMES ' "$RUNNER_TEMP/xray.log"; echo '~~~'; } >> "$GITHUB_STEP_SUMMARY"
           fi

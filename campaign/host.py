@@ -18,18 +18,28 @@ import time
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from readiness import safe_note
+import xray_records
 
 ROLES=['normal','late','loss','absent','wall','sleep','paused','delay','reboot']
 PASS,FAIL,NP='PASS','FAIL','NOT_PROVEN'
+def unique_fields(items):
+    fields = dict(items)
+    if len(fields) != len(items):
+        raise ValueError('duplicate JSON field')
+    return fields
+
 def read(stream,kind,events):
     for line in stream:
-        if len(line)<=24000:
-            try:
-                value=json.loads(line)
-                if isinstance(value,dict):
-                    events.put((kind,value))
-            except (ValueError,UnicodeDecodeError):
-                pass
+        try:
+            if len(line)>24000:
+                raise ValueError('oversize record')
+            value=json.loads(line, object_pairs_hook=unique_fields)
+            if not isinstance(value,dict):
+                raise ValueError('invalid record')
+            events.put((kind,value))
+        except (ValueError,UnicodeDecodeError):
+            if kind=='serial':
+                events.put((kind,{'event':'invalid_serial'}))
     events.put((kind,None))
 
 def numeric_tree(value,key=''):
@@ -62,6 +72,27 @@ def record_xray_part(evidence,message):
     if key in ('uc0','up0'):
         print('XRAY_WIRE',evidence['role'],key,json.dumps(data,separators=(',',':')),flush=True)
 
+def receive_xray(e, message, books, challenge):
+    event = message.get('event')
+    try:
+        if event == 'xray_part' and 'receipt_verified' not in e:
+            record_xray_part(e, message)
+        elif event == 'transport_case' and message.get('protocol') == 'reality' and 'transport' not in e and numeric_tree(message.get('data')) and 'receipt_verified' not in e:
+            e['transport'] = {'reality': message['data']}
+        elif event == 'rx_frames' and 'receipt_verified' not in e:
+            side = message['side']
+            books[side].add(message, e['armed_ticket'][1])
+            print('XRAY_FRAMES', e['role'], side, message['offset'], message['rows'], flush=True)
+        elif event == 'xray_receipt' and 'receipt_verified' not in e:
+            e['frames'] = {side: book.summary() for side, book in books.items()}
+            hashes = {side: book.raw_hash.hexdigest() for side, book in books.items()}
+            expected = xray_records.receipt(challenge, e['armed_ticket'], e['trial'], e['transport']['reality'], hashes)
+            e['receipt_verified'] = expected == message['digest']
+        else:
+            raise ValueError('unexpected or repeated record')
+    except (ValueError, KeyError, IndexError, TypeError, struct.error):
+        e['trial_record_errors'] = e.get('trial_record_errors', 0) + 1
+
 def run_guest(work,role):
     evidence={'role':role}
     path=work/role
@@ -75,6 +106,8 @@ def run_guest(work,role):
           '-drive','file='+str(work/'guest.ext4')+',if=virtio,format=raw,snapshot=on']
     bus=queue.Queue()
     challenge=secrets.token_hex(16)
+    target_xray=role in ('xray-short','xray-proof')
+    books={side:xray_records.FrameLedger() for side in xray_records.SIDES}
     with (path/'qemu').open('wb') as log,socket.socket(socket.AF_UNIX) as qmp:
         vm=sp.Popen(args,stdin=sp.PIPE,stdout=sp.PIPE,stderr=log,
                     env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'})
@@ -135,8 +168,12 @@ def run_guest(work,role):
                         if not (set(v)<=set('systemd nftables iproute2 libbpf1 clang-18 llvm-18 tcpdump libpcap0.8t64 python3 util-linux openssl kernel abi bpftool xray'.split())
                                 and all(re.fullmatch('[0-9][a-zA-Z0-9:.+~_-]{0,60}',s) for s in v.values())):
                             raise ValueError('versions')
+                        if target_xray and 'versions' in evidence:
+                            raise ValueError('duplicate identity')
                         evidence['versions']=v
                     elif event=='armed' and type(m.get('deadline_ns')) is int:
+                        if target_xray and 'armed_ticket' in evidence:
+                            raise ValueError('duplicate ticket')
                         evidence['armed_ticket']=[m['start_ns'],m['deadline_ns']]
                         print('ARMED',role,*evidence['armed_ticket'],flush=True)
                     elif event=='rebooting' and role=='reboot':
@@ -175,6 +212,8 @@ def run_guest(work,role):
                         ledger['count']+=len(values)
                         ledger['late']+=sum(x>=deadline for x in values)
                         ledger['last']=values[-1]
+                    elif target_xray and event in ('xray_part','transport_case','rx_frames','xray_receipt','xray_trial','invalid_serial'):
+                        receive_xray(evidence,m,books,challenge)
                     elif event=='xray_part' and role in ('xray-short','xray-proof','xray-repro'):
                         record_xray_part(evidence,m)
                     elif event=='xray_trial' and role.startswith('xray-') and numeric_tree(m.get('data')):
@@ -201,6 +240,8 @@ def run_guest(work,role):
                         if event=='fatal':
                             break
                     elif event in ('done','unavailable'):
+                        if target_xray:
+                            evidence['done']=event=='done'
                         break
                 if hello and evidence.get('kvm') and not started:
                     started=True

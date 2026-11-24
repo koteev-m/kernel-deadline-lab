@@ -17,12 +17,18 @@ HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE))
 import lab
 import measure
+import xray_records
 
 STATE=Path('/var/lib/native-series')
 ROLES={'qualification','inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray','tls-inspect','closure-short','wall-final','proxy-final','xray-repro','xray-short','xray-proof'}
 
 def emit(event,**values):
-    port.write((json.dumps(dict(event=event,**values),separators=(',',':'))+'\n').encode())
+    data = memoryview((json.dumps(dict(event=event, **values), separators=(',', ':')) + '\n').encode())
+    while data:
+        written = port.write(data)
+        if not written:
+            raise OSError('short serial write')
+        data = data[written:]
 
 def sentinel(create=False):
     if create:
@@ -126,8 +132,9 @@ def main():
         trial=measure.read(out,'xray-trial')
         trial['sentinel_intact']=sentinel()==fw
         trial['driver_exit']=proc.returncode
-        for key,value in trial.items():
-            emit('xray_part',key=key,data=value)
+        if role not in ('xray-short','xray-proof'):
+            for key,value in trial.items():
+                emit('xray_part',key=key,data=value)
     for protocol in ('tls','reality'):
         if (out/protocol/'status.json').is_file():
             status=measure.read(out/protocol,'status')
@@ -135,7 +142,11 @@ def main():
                 status['application']=measure.read(out/protocol,'application')
             if (out/protocol/'end.json').is_file():
                 status['end']=measure.read(out/protocol,'end')
-            emit('transport_case',protocol=protocol,data=status)
+            if role in ('xray-short','xray-proof') and protocol=='reality' and (out/'xray-trial.json').exists():
+                ticket = measure.read(out,'ticket')
+                xray_records.emit_trial(emit, out, challenge, [ticket['start'], ticket['deadline']], trial, status)
+            else:
+                emit('transport_case',protocol=protocol,data=status)
     if (out/'proxy-stages.json').exists():
         emit('proxy_stages',data=measure.read(out,'proxy-stages'))
     if role=='inspect':
