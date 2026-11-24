@@ -1,0 +1,24 @@
+name: Offline kernel preflight
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: offline-kernel-preflight
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: github.event_name == 'workflow_dispatch' && github.event.repository.private == false && github.event.repository.id != null && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check host and prepare authenticated guest
+        run: |
+          test "$(uname -m)" = x86_64
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root bash build.sh "$RUNNER_TEMP/deadline-preflight"
+      - name: Observe the isolated guest
+        run: |
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root python3 -I -B observe.py "$RUNNER_TEMP/deadline-preflight"
