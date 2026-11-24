@@ -12,6 +12,9 @@ import sys
 import threading
 import time
 
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from readiness import safe_note
+
 ROLES=['normal','late','loss','absent','wall','sleep','paused','delay','reboot']
 PASS,FAIL,NP='PASS','FAIL','NOT_PROVEN'
 def read(stream,kind,events):
@@ -122,7 +125,6 @@ def run_guest(work,role):
                     elif event=='clock' and numeric_tree([m['before'],m['after']]):
                         evidence['clock']=[m['before'],m['after']]
                     elif event=='instrument' and role=='inspect' and m.get('side') in ('uc0','up0'):
-                        from readiness import safe_note
                         record=m['data']
                         notes=record.pop('stderr')
                         if isinstance(notes,list) and all(safe_note(line) for line in notes) and all(
@@ -132,6 +134,11 @@ def run_guest(work,role):
                         evidence['partial']=m['data']
                     elif event=='measurement' and numeric_tree(m.get('data')):
                         evidence['measure']=m['data']
+                    elif event=='detail' and m.get('label') in ('CAPTURE','BPF','LISTENER','STATS') and numeric_tree(m.get('fields')):
+                        evidence.setdefault('detail',{})[m['label']]=m['fields']
+                    elif event=='probe_note' and m.get('label') in ('uc0','up0','driver'):
+                        if safe_note(m.get('text')):
+                            evidence.setdefault('notes',[]).append([m['label'],m['text']])
                     elif event=='capture_diag' and type(m.get('code')) is int and 0<=m['code']<5:
                         evidence.setdefault('capture_diag',[]).append(m['code'])
                     elif event in ('fault','fatal'):
@@ -173,7 +180,7 @@ def judged(e):
         return FAIL
     if not(e.get('kvm') and m['driver_completed'] and m['source_assessor'] in (1,2)
            and e.get('armed_ticket')==[m['start_ns'],m['deadline_ns']]
-           and m['duration_ns']==600_000_000_000 and m['foreign_pid_same'] and m['firewall_same']
+           and m['duration_ns']==(35_000_000_000 if role=='qualification' else 600_000_000_000) and m['foreign_pid_same'] and m['firewall_same']
            and m['control_continuous'] and m['sentinel_intact']):
         return NP
     for s in sides:
@@ -242,4 +249,9 @@ if __name__=='__main__':
         complete=all(isinstance(record.get(d),dict) for d in ('uc0','up0'))
         print('RESULT',json.dumps({'diagnostic_complete':complete}),flush=True)
         sys.exit(0 if complete else 1)
+    if sys.argv[2:]==['qualification']:
+        record=run_guest(Path(sys.argv[1]),'qualification')
+        quality=judged(record)
+        print('QUALIFICATION',quality,flush=True)
+        sys.exit(0 if quality==PASS else 1)
     sys.exit(campaign(Path(sys.argv[1])))

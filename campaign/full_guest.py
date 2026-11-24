@@ -16,7 +16,7 @@ import lab
 import measure
 
 STATE=Path('/var/lib/native-series')
-ROLES={'inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray'}
+ROLES={'qualification','inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray'}
 
 def emit(event,**values):
     port.write((json.dumps(dict(event=event,**values),separators=(',',':'))+'\n').encode())
@@ -116,7 +116,30 @@ def main():
             if note.is_file():
                 emit('instrument',side=dev,data=json.loads(note.read_text()))
     if proc.returncode:
-        partial={}
+        partial={'driver_exit':proc.returncode}
+        if (out/'environment.json').exists():
+            for side in ('uc0','up0'):
+                log=out/(side+'.capture')
+                if log.exists():
+                    notes=[json.loads(s) for s in log.read_text().splitlines() if s.startswith('{') and s.endswith('}')]
+                    partial[side+'_capture_bound']=any('bound' in v for v in notes)
+                    for v in notes:
+                        if 'error' in v:
+                            emit('probe_note',label=side,text=v.get('reason','unknown'))
+                        if 'frames' in v: partial[side+'_frames']=v['frames']
+        mark=(STATE/'private-driver.log').read_text(errors='replace')
+        for entry in mark.splitlines():
+            if entry.startswith('lab-sites '):
+                partial['sites']=[int(i) for i in entry.split()[1:] if i.isdigit()][-5:]
+            elif entry.startswith('lab-fault ') or entry.startswith('Error:') or entry.startswith('RTNETLINK answers:'):
+                import readiness
+                safe=re.sub(r'/[a-zA-Z0-9._/-]+','[guest-path]',entry[:250])
+                if readiness.safe_note(safe):
+                    emit('probe_note',label='driver',text=safe)
+        for key in ('CAPTURE','BPF','LISTENER','STATS'):
+            for line in mark.splitlines():
+                if line.startswith(key+'_DETAIL '):
+                    emit('detail',label=key,fields=json.loads(line.split(' ',1)[1]))
         if (out/'readiness-fault.json').is_file():
             partial['readiness']=measure.read(out,'readiness-fault')
         if (out/'ticket.json').is_file():
@@ -128,6 +151,13 @@ def main():
             file=out/(dev+'.jsonl')
             if file.is_file():
                 rows=[json.loads(x) for x in file.read_text().splitlines() if x.endswith('}')]
+                t=partial.get('deadline_ns')
+                partial[dev+'_migrated']=any(r['kind']=='migrated' for r in rows)
+                for f in ('4','6'):
+                    for stream in ('udp','tcp','new-tcp','inherited-udp'):
+                        partial[dev+f+'_'+stream]=sum(r['kind']=='rx' and r['family']==f and r['stream']==stream for r in rows)
+                if t:
+                    partial[dev+'_fresh_late_rx']=sum(r['kind']=='rx' and r['sent']>=t for r in rows)
                 partial[dev+'_ready']=any(r['kind']=='ready' for r in rows)
                 partial[dev+'_rx']=sum(r['kind']=='rx' for r in rows)
         emit('partial',data=partial)

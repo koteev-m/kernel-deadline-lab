@@ -36,7 +36,7 @@ def do(lab,stack,out,ends,apps):
         if all(s['ready'] and s['migrated'] for s in states.values()) or any(not s['app_running'] for s in states.values()):
             break
         time.sleep(.05)
-    caps=[lab.capture(stack,ns,out,d) for d,ns,*_ in ends]
+    caps=[lab.capture(stack,ns,out,d,legacy=True) for d,ns,*_ in ends]
     until=time.monotonic()+5
     while time.monotonic()<until:
         if all(p.poll() is not None or 'listening on' in (out/(d+'.capture')).read_text() for d,p in zip(names,caps)):

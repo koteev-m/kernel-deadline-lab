@@ -21,7 +21,7 @@ def measure(d,role):
     output=io.StringIO()
     try:
         with contextlib.redirect_stdout(output):
-            assess.assess(d)
+            assess.assess(d,qualification=role=="qualification")
         original=json.loads(output.getvalue())
     except (KeyError,IndexError,StopIteration,ValueError) as exc:
         original={}
@@ -56,6 +56,10 @@ def measure(d,role):
         side={}
         report[key]=side
         rows=assess.lines(d/(dev+'.snapshot'))
+        capture_log=(d/(dev+'.capture')).read_text().splitlines()
+        counter=json.loads(capture_log[-1])
+        side['socket_kernel_frames']=counter['kernel']
+        side['socket_drops']=counter['drops']
         side['listener_count']=len(end['listeners'][dev])
         side['frames_after_counter']=end['state'][dev]['packet_attempts']-end['first'][dev]
         side['attach_bracket_ns']=arm['intervals'].get(dev,[])

@@ -34,8 +34,14 @@ def boot():
     return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 
 
-def check_ticket(ticket):
-    require(ticket['deadline'] == ticket['start'] + WINDOW and ticket['start'] > 0,
+def window(mode):
+    return 35 * SEC if mode == 'qualification' else WINDOW
+
+
+def check_ticket(ticket, issued_mode=None):
+    mode = ticket['mode'] if issued_mode is None else issued_mode
+    require(ticket['mode'] == mode, 'TICKET_MODE_CHANGED')
+    require(ticket['deadline'] == ticket['start'] + window(mode) and ticket['start'] > 0,
             'INVALID_ORIGINAL_DEADLINE')
     require(ticket['boot'] == boot(), 'OLD_BOOT_DENIED')
 
@@ -176,12 +182,16 @@ def workload(stack, ns, out, name, *args):
                          (HERE / 'traffic.py').read_text(), *args], log, err)
 
 
-def capture(stack, ns, out, dev):
+def capture(stack, ns, out, dev, *, legacy=False):
     pcap = stack.enter_context((out / (dev + '.pcap')).open('xb'))
     diag = stack.enter_context((out / (dev + '.capture')).open('xb'))
     index = json.loads(cmd(*ns,'ip','-j','link','show','dev',dev))[0]['ifindex']
-    p = spawn(stack, [*ns, 'tcpdump', '-p', '-U', '-nn', '-Q', 'in', '-i', 'any', '-y', 'LINUX_SLL2',
-                      '-Z', 'root', '-s', '0', '-w', '-', 'ifindex', str(index)], pcap, diag)
+    if legacy:
+        args = ['tcpdump','-p','-U','-nn','-Q','in','-i','any','-y','LINUX_SLL2',
+                '-Z','root','-s','0','-w','-','ifindex',str(index)]
+    else:
+        args = [sys.executable,'-I','-B',str(HERE/'frame_capture.py'),dev,str(index)]
+    p = spawn(stack, [*ns,*args], pcap, diag)
     return p
 
 
@@ -269,10 +279,14 @@ def run(out, mode):
         wait_observers(out, 1, names, apps, 8, endpoint_ready)
         caps = [capture(stack, ns, out, dev) for dev, ns, _, _ in ends]
         def capture_ready(dev):
-            return {'listening': 'listening on' in (out/(dev+'.capture')).read_text()}
+            link = next(ns for d,ns,*_ in ends if d==dev)
+            idx = json.loads(cmd(*link,'ip','-j','link','show','dev',dev))[0]['ifindex']
+            expected = dict(bound=idx,ingress=True,kernel_time=True)
+            seen = (out/(dev+'.capture')).read_text().splitlines()
+            return {'listening': bool(seen and json.loads(seen[0])==expected)}
         wait_observers(out, 2, names, caps, 5, capture_ready)
         ticket = dict(run=token, boot=boot(), start=now(), mode=mode)
-        ticket['deadline'] = ticket['start'] + WINDOW
+        ticket['deadline'] = ticket['start'] + window(mode)
         put(out / 'ticket.json', ticket)
         permit, permit_tag = build(work, 'bounded', ticket['deadline'])
         forked = os.fork()
@@ -287,7 +301,7 @@ def run(out, mode):
                         time.sleep(.12)
                 reread = json.loads((out / 'ticket.json').read_text())
                 require(reread == ticket, 'attempt changed')
-                check_ticket(reread)
+                check_ticket(reread, mode)
                 times = {}
                 tags = {20: deny_tag}
                 if mode != 'absent':
@@ -424,7 +438,7 @@ def run(out, mode):
 def main():
     os.environ['LC_ALL'] = 'C'
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['inspect','normal','paused','delay','late','loss','absent','xray','old-boot'])
+    parser.add_argument('mode', choices=['qualification','inspect','normal','paused','delay','late','loss','absent','xray','old-boot'])
     parser.add_argument('output', type=Path)
     args = parser.parse_args()
     if args.mode == 'old-boot':
@@ -468,6 +482,8 @@ if __name__ == '__main__':
         main()
     except (OSError, RuntimeError, ValueError, KeyError, sp.SubprocessError) as exc:
         import traceback
-        frame = traceback.extract_tb(exc.__traceback__)[-1]
+        frames = traceback.extract_tb(exc.__traceback__)
+        print('lab-sites', *(f.lineno for f in frames if Path(f.filename).name=='lab.py'),file=sys.stderr)
+        frame = frames[-1]
         print('lab-fault', frame.lineno, type(exc).__name__, str(exc)[:180], file=sys.stderr)
         raise SystemExit(1)

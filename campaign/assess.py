@@ -37,10 +37,11 @@ def packets(path, ifindex):
             yield sec*10**9 + frac*scale, data
 
 
-def assess(d):
+def assess(d, *, qualification=False):
     ticket, watch, end = [load(d / (key+'.json')) for key in ('ticket','watch','end')]
     start, t, mode = ticket['start'], ticket['deadline'], ticket['mode']
-    need(t-start == 600_000_000_000, 'wrong duration')
+    need((mode=='qualification') == qualification, 'wrong measurement class')
+    need(t-start == (35_000_000_000 if qualification else 600_000_000_000), 'wrong duration')
     need(end['end'] > t and watch['protected_pid'] == end['protected_pid'] and
          watch['firewall_before'] == end['firewall_after'], 'baseline/endpoints')
     need({r['dev'] for r in end['brackets'] if r['action']==2 and r['before']>=t}
@@ -92,7 +93,10 @@ def assess(d):
                          for a in after for b in before[-1:]), 'no retransmission witness')
         need(end['state'][dev]['packet_attempts'] > end['first'][dev], 'no packets reached classifier after T')
         diag = (d/(dev+'.capture')).read_text()
-        need(re.search(r'^0 packets dropped by kernel$',diag,re.M), 'capture loss unknown')
+        messages = [json.loads(x) for x in diag.splitlines()]
+        need(len(messages)==2 and messages[0]==dict(bound=watch['ifindexes'][dev],ingress=True,kernel_time=True), 'capture bind identity')
+        counters = messages[1]
+        need(counters['drops']==0, 'capture loss unknown')
         seen, n, crossing = set(), 0, 0
         for ts, frame in packets(d/(dev+'.pcap'), watch['ifindexes'][dev]):
             n += 1
@@ -115,8 +119,7 @@ def assess(d):
                         crossing += 1
                 elif ts >= realtime[-1]:
                     crossing += 1
-        capcount = re.search(r'^(\d+) packets? captured$', diag, re.M)
-        need(capcount and int(capcount[1])==n, 'capture file/count mismatch')
+        need(counters['kernel']==counters['frames']==n, 'capture file/count mismatch')
         if active:
             need(seen >= streams, 'missing wire comparator')
         if crossing:

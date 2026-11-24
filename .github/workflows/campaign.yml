@@ -20,13 +20,21 @@ jobs:
           test "$(uname -m)" = x86_64
           sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root bash build.sh "$RUNNER_TEMP/native" full
           dpkg-query -W -f='QEMU ${Version}\n' qemu-system-x86
+      - name: Qualify the complete measurement path on this disk
+        run: |
+          set -o pipefail
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root python3 -I -B campaign/host.py "$RUNNER_TEMP/native" qualification | tee "$RUNNER_TEMP/qualification"
       - name: Observe independent original deadlines
+        if: success()
         run: |
           set -o pipefail
           sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root python3 -I -B campaign/host.py "$RUNNER_TEMP/native" | tee "$RUNNER_TEMP/measurements"
       - name: Record measured results
         if: always()
         run: |
+          if test -s "$RUNNER_TEMP/qualification"; then
+            { echo '### Instrument qualification'; echo '~~~text'; cat "$RUNNER_TEMP/qualification"; echo '~~~'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
           if test -s "$RUNNER_TEMP/measurements"; then
             {
               echo '### Native campaign measurements'
