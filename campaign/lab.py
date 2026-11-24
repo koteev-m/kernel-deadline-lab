@@ -294,6 +294,11 @@ def run(out, mode):
             seen = (out/(dev+'.capture')).read_text().splitlines()
             return {'listening': bool(seen and json.loads(seen[0])==expected)}
         wait_observers(out, 2, names, caps, 5, capture_ready)
+        clock_taps=[]
+        targeted=os.environ.get('LAB_TARGET','')
+        if targeted:
+            import rx_clock
+            clock_taps=rx_clock.install(sys.modules[__name__],stack,work,out,ends)
         active = mode not in ('absent','late')
         if active:
             OBSERVERS.update(retrans.mount_observers(sys.modules[__name__],ends,work))
@@ -372,6 +377,18 @@ def run(out, mode):
             proxy.start(stack, c, peer, out)
             if os.environ.get('LAB_INSPECT_TLS')=='1':
                 return
+        fixtures=[]
+        if targeted in ('closure-short','proxy-final'):
+            from transport import Fixture
+            for protocol in (('tls','reality') if targeted=='closure-short' else ('reality',)):
+                fixture=Fixture(out,protocol)
+                try:
+                    fixture.start(stack,c,peer)
+                    fixtures.append(fixture)
+                except (RuntimeError,ValueError,OSError,sp.SubprocessError) as exc:
+                    fixture.stages['error_line']=__import__('traceback').extract_tb(exc.__traceback__)[-1].lineno
+                finally:
+                    fixture.snapshot()
         if mode == 'loss':
             # Kill only the fork we created, after a real bidirectional application exchange.
             wait_until(lambda: all('"kind": "rx"' in (out / (d+'.jsonl')).read_text()
@@ -401,7 +418,7 @@ def run(out, mode):
         after = hashlib.sha256(cmd(*hostfw).encode()).hexdigest()
         require(before == after and all(p.poll() is None for p in [foreign, *caps, *apps]),
                 'foreign baseline or witness changed')
-        for p in caps:
+        for p in caps+clock_taps:
             p.send_signal(signal.SIGINT)
             require(p.wait(timeout=6) == 0, 'capture failed')
         listeners = {}
@@ -421,6 +438,12 @@ def run(out, mode):
             retrans.collect(sys.modules[__name__],ends,out,probes,OBSERVERS)
         if mode == 'xray':
             proxy.finish(c, peer, out, ticket)
+        for fixture in fixtures:
+            try:
+                put(fixture.out/'end.json',fixture.finish(ticket['deadline']))
+            except (RuntimeError,ValueError,OSError,sp.SubprocessError) as exc:
+                fixture.stages['end_error_line']=__import__('traceback').extract_tb(exc.__traceback__)[-1].lineno
+            fixture.snapshot()
         put(out/'end.json', dict(end=now(), first=first, state=end, brackets=final_checks, firewall_after=after,
                                  protected_pid=foreign.pid, listeners=listeners))
         for dev in ('uc0','up0','control'):

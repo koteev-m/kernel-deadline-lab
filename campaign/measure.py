@@ -24,7 +24,7 @@ def measure(d,role):
     output=io.StringIO()
     try:
         with contextlib.redirect_stdout(output):
-            assess.assess(d,qualification=role=="qualification",probes=probes)
+            assess.assess(d,qualification=role in ("qualification","closure-short"),probes=probes)
         original=json.loads(output.getvalue())
     except (KeyError,IndexError,StopIteration,ValueError) as exc:
         original={}
@@ -113,5 +113,8 @@ def measure(d,role):
                     ambiguous+=1
             elif max(limits)>=t:
                 unsigned+=1
+        if role in ('closure-short','wall-final','proxy-final'):
+            import rx_clock
+            side['rx_clock']=rx_clock.compare(d,dev,watch['ifindexes'][dev],t)
         side.update(wire_frames=wire,wire_fresh=fresh,wire_boundary=unsigned,wire_uncalibrated=ambiguous)
     return report

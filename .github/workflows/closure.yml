@@ -10,7 +10,7 @@ jobs:
   native:
     if: github.event_name == 'workflow_dispatch' && github.event.repository.private == false && github.event.repository.id != null && github.run_attempt == 1
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -20,5 +20,13 @@ jobs:
           test "$(uname -m)" = x86_64
           sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root bash build.sh "$RUNNER_TEMP/native" full
           dpkg-query -W -f='QEMU ${Version}\n' qemu-system-x86
-      - name: Identify the historical transport failure
-        run: sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root python3 -I -B campaign/host.py "$RUNNER_TEMP/native" tls-inspect
+      - name: Qualify the observers and run only their approved full cases
+        run: |
+          set -o pipefail
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root python3 -I -B campaign/closure.py "$RUNNER_TEMP/native" | tee "$RUNNER_TEMP/closure.log"
+      - name: Record measurements
+        if: always()
+        run: |
+          if test -s "$RUNNER_TEMP/closure.log"; then
+            { echo '### Clock and transport evidence'; echo '~~~text'; grep -E '^(EVIDENCE |QUALIFICATION |TARGET_RESULT )' "$RUNNER_TEMP/closure.log" || true; echo '~~~'; } >> "$GITHUB_STEP_SUMMARY"
+          fi

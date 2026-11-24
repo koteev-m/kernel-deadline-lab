@@ -1,6 +1,10 @@
 """One manual job. Collect reduced measurements from isolated copy-on-write guests."""
 from concurrent.futures import ThreadPoolExecutor
+import base64
+import itertools
 import json
+import struct
+import zlib
 import os
 from pathlib import Path
 import queue
@@ -35,6 +39,8 @@ def numeric_tree(value,key=''):
         return len(value)<=(20 if key=='errors' else 5) and all(numeric_tree(x,key) for x in value)
     if isinstance(value,dict):
         return len(value)<80 and all(re.fullmatch(r'[a-z0-9_-]{1,40}',k) and numeric_tree(v,k) for k,v in value.items())
+    if isinstance(value,str) and key in ('kernel_sha256','pcap_sha256'):
+        return bool(re.fullmatch('[0-9a-f]{64}',value))
     if isinstance(value,str) and key in ('assessor_check','errors'):
         return bool(re.fullmatch('[A-Z][A-Z0-9_]{0,159}',value))
     return isinstance(value,str) and key in ('10','20') and bool(re.fullmatch('[0-9a-f]{16}',value))
@@ -132,6 +138,28 @@ def run_guest(work,role):
                         if isinstance(notes,list) and all(safe_note(line) for line in notes) and all(
                             re.fullmatch('[a-z_]+',k) and (v is None or type(v) in (bool,int)) for k,v in record.items()):
                             evidence[m['side']]=dict(record,stderr=notes)
+                    elif event=='frame_times' and role in ('closure-short','wall-final','proxy-final'):
+                        side=m.get('side')
+                        n=m.get('n')
+                        if type(n) is not int or not 1<=n<=240 or not isinstance(m.get('ticks'),str) or len(m['ticks'])>4096:
+                            raise ValueError('receive batch bounds')
+                        decoder=zlib.decompressobj()
+                        raw=decoder.decompress(base64.b64decode(m['ticks'],validate=True),8*n+1)
+                        if len(raw)!=8*n or not decoder.eof or decoder.unused_data:
+                            raise ValueError('receive batch layout')
+                        values=list(itertools.accumulate(struct.unpack('<'+'Q'*n,raw)))
+                        if side not in ('uc0','up0') or not isinstance(values,list) or not 1<=len(values)<=240 or not all(type(v) is int and 0<v<10**16 for v in values):
+                            raise ValueError('receive ledger format')
+                        ledger=evidence.setdefault('ledger',{}).setdefault(side,dict(count=0,late=0,last=0))
+                        if m.get('offset')!=ledger['count'] or values!=sorted(values) or values[0]<ledger['last']:
+                            raise ValueError('receive ledger order')
+                        deadline=evidence['armed_ticket'][1]
+                        print('FRAME_TIMES',role,side,ledger['count'],','.join(map(str,values)),flush=True)
+                        ledger['count']+=len(values)
+                        ledger['late']+=sum(x>=deadline for x in values)
+                        ledger['last']=values[-1]
+                    elif event=='transport_case' and m.get('protocol') in ('tls','reality') and numeric_tree(m.get('data')):
+                        evidence.setdefault('transport',{})[m['protocol']]=m['data']
                     elif event=='proxy_stages' and numeric_tree(m.get('data')):
                         evidence['proxy_stages']=m['data']
                     elif event=='partial' and numeric_tree(m.get('data')):
@@ -186,14 +214,25 @@ def judged(e):
         return FAIL
     if not(e.get('kvm') and m['driver_completed'] and m['source_assessor'] in (1,2)
            and e.get('armed_ticket')==[m['start_ns'],m['deadline_ns']]
-           and m['duration_ns']==(35_000_000_000 if role=='qualification' else 600_000_000_000) and m['foreign_pid_same'] and m['firewall_same']
+           and m['duration_ns']==(35_000_000_000 if role in ('qualification','closure-short') else 600_000_000_000) and m['foreign_pid_same'] and m['firewall_same']
            and m['control_continuous'] and m['sentinel_intact']):
         return NP
     for s in sides:
         if not(s['frames_after_counter']>0 and s['listener_count']==2 and s['programs_unchanged']
                and s['test_after']==2 and s['test_before']==(2 if closed else 0)):
             return NP
-        if not closed and (s['wire_boundary'] or s['wire_uncalibrated']):
+        if role in ('closure-short','wall-final','proxy-final'):
+            obs=s.get('rx_clock',{})
+            ledger=e.get('ledger',{}).get('uc0' if s is sides[0] else 'up0',{})
+            if not (ledger.get('count')==obs.get('matched') and ledger.get('late')==obs.get('at_or_after') and
+                    ledger.get('last')==obs.get('last') and obs.get('kernel_sha256')==obs.get('pcap_sha256') and obs.get('kernel_sha256')):
+                return NP
+            if not (obs.get('matched')==s['wire_frames']==s['socket_kernel_frames'] and
+                    obs.get('pre')==s['wire_frames']>0 and obs.get('at_or_after')==0 and
+                    obs.get('reserve_drops')==obs.get('read_errors')==s['socket_drops']==0 and
+                    0<obs['first']<=obs['last']<m['deadline_ns']):
+                return NP
+        elif not closed and (s['wire_boundary'] or s['wire_uncalibrated']):
             return NP
         if not closed and not all(s['established'+f] for f in ('4','6')):
             return NP
@@ -210,12 +249,12 @@ def judged(e):
             return NP
     if role=='loss' and not m['installer_killed']:
         return NP
-    if role in ('sleep','wall'):
+    if role in ('sleep','wall','closure-short','wall-final'):
         if 'clock' not in e:
             return NP
         a,b=e['clock']
-        if role=='wall':
-            if not(a[0]<m['deadline_ns'] and b[0]<m['deadline_ns'] and b[2]-a[2]<-3599*10**9):
+        if role in ('wall','closure-short','wall-final'):
+            if not(a[0]<=b[0]<m['deadline_ns'] and m['clock_segments']>=2 and b[2]-a[2]<-3599*10**9):
                 return NP
         elif not(a[0]<m['deadline_ns']<b[0] and e.get('qmp_wakeup') and
                  abs((b[0]-a[0])-(b[1]-a[1])-e.get('qmp_sleep_to_request_ns',0))<2*10**9):

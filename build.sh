@@ -30,7 +30,7 @@ extra=""
 if [[ ${2:-} == full ]]; then
   extra=",tcpdump,openssl"
   install -d "$work/campaign"
-  install -m 0644 campaign/*.py campaign/seq_observer.c "$work/campaign/"
+  install -m 0644 campaign/*.py campaign/seq_observer.c campaign/rx_clock.c "$work/campaign/"
   python3 -I -B campaign/fetch_proxy.py "$work"
 fi
 export LAB_WORK="$work"

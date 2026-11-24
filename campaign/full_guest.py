@@ -1,5 +1,8 @@
 """Offline one-series guest. The host selects an enumerated role on a private serial port."""
+import base64
 import json
+import struct
+import zlib
 import os
 from pathlib import Path
 import platform
@@ -16,7 +19,7 @@ import lab
 import measure
 
 STATE=Path('/var/lib/native-series')
-ROLES={'qualification','inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray','tls-inspect'}
+ROLES={'qualification','inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray','tls-inspect','closure-short','wall-final','proxy-final'}
 
 def emit(event,**values):
     port.write((json.dumps(dict(event=event,**values),separators=(',',':'))+'\n').encode())
@@ -33,7 +36,7 @@ def identity():
     lab.require(platform.machine()=='x86_64' and platform.freedesktop_os_release()['VERSION_ID']=='24.04' and Path('/proc/1/comm').read_text().strip()=='systemd','guest')
     versions={k:lab.cmd('dpkg-query','-W','-f=${Version}',k).strip() for k in ('systemd','nftables','iproute2','libbpf1','clang-18','llvm-18','tcpdump','libpcap0.8t64','python3','util-linux','openssl')}
     versions.update(kernel=platform.release(),abi='6.8.0-48.48',bpftool=re.search(r'bpftool v([0-9.]+)',lab.cmd('bpftool','version'))[1])
-    if (HERE/'xray').exists() and ROLE in ('xray','tls-inspect'):
+    if (HERE/'xray').exists() and ROLE in ('xray','tls-inspect','closure-short','proxy-final'):
         v=lab.cmd(HERE/'xray','version').split()
         lab.require(v[:2]==['Xray','26.11.9'],'proxy version')
         versions['xray']=v[1]
@@ -80,6 +83,9 @@ def main():
     # Only the normal series runs the destructive, disposable qdisc boundary control.
     env=dict(os.environ,LAB_BOUNDARY='1' if role=='normal' else '0')
     env['LAB_INSPECT_TLS']='1' if role=='tls-inspect' else '0'
+    if role in ('closure-short','wall-final','proxy-final'):
+        mode='qualification' if role=='closure-short' else 'normal'
+        env['LAB_TARGET']=role
     with (STATE/'private-driver.log').open('wb') as private:
         proc=sp.Popen([sys.executable,'-I','-B',HERE/'lab.py',mode,out],
                       stdout=private,stderr=private,env=env)
@@ -90,7 +96,7 @@ def main():
                 ticket=measure.read(out,'ticket')
                 watching=True
                 emit('armed',start_ns=ticket['start'],deadline_ns=ticket['deadline'])
-            if watching and not touched and role in ('reboot','wall','sleep'):
+            if watching and not touched and role in ('reboot','wall','sleep','closure-short','wall-final'):
                 remain=ticket['deadline']-lab.now()
                 if (role=='reboot' or remain<5_000_000_000) and observed(out):
                     touched=True
@@ -113,6 +119,12 @@ def main():
                     lab.put(STATE/'clock-event',dict(before=a,after=b))
                     emit('clock',before=a,after=b)
             time.sleep(.18)
+    for protocol in ('tls','reality'):
+        if (out/protocol/'status.json').is_file():
+            status=measure.read(out/protocol,'status')
+            if (out/protocol/'end.json').is_file():
+                status['end']=measure.read(out/protocol,'end')
+            emit('transport_case',protocol=protocol,data=status)
     if (out/'proxy-stages.json').exists():
         emit('proxy_stages',data=measure.read(out,'proxy-stages'))
     if role=='inspect':
@@ -197,6 +209,24 @@ def main():
         if role=='xray' and (out/'proxy-end.json').is_file():
             report['proxy']=measure.read(out,'proxy-end')
         emit('measurement',data=report)
+        if role in ('closure-short','wall-final','proxy-final'):
+            import rx_clock
+            def frame_batch(side,offset,values):
+                raw=struct.pack('<'+'Q'*len(values),values[0],*[b-a for a,b in zip(values,values[1:])])
+                emit('frame_times',side=side,offset=offset,n=len(values),ticks=base64.b64encode(zlib.compress(raw)).decode('ascii'))
+            for side in ('uc0','up0'):
+                with (out/(side+'.clock')).open('rb') as journal:
+                    batch=[]
+                    offset=0
+                    for raw in iter(lambda:journal.read(rx_clock.ROW.size),b''):
+                        at=rx_clock.ROW.unpack(raw)[1]
+                        batch.append(at)
+                        if len(batch)==240:
+                            frame_batch(side,offset,batch)
+                            offset+=len(batch)
+                            batch=[]
+                    if batch:
+                        frame_batch(side,offset,batch)
     emit('done')
 
 if __name__=='__main__':
