@@ -36,3 +36,9 @@ ExecStart=/usr/bin/python3 -I -B /opt/lab/guest.py
 WantedBy=multi-user.target
 EOF
 ln -s ../lab-probe.service "$root/etc/systemd/system/multi-user.target.wants/lab-probe.service"
+
+if [[ -d "$work/campaign" ]]; then
+  install -m 0644 "$work/campaign/"*.py "$root/opt/lab/"
+  if [[ -f "$work/proxy-bin" ]]; then install -m 0755 "$work/proxy-bin" "$root/opt/lab/xray"; fi
+  sed -i 's@/opt/lab/guest.py@/opt/lab/full_guest.py@' "$root/etc/systemd/system/lab-probe.service"
+fi

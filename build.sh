@@ -26,13 +26,20 @@ python3 -I -B packages.py "$work"
 echo "BUILD constructing Noble userland"
 install -m 0644 gate.bpf.c guest.py "$work/"
 install -m 0755 root-hook.sh "$work/"
+extra=""
+if [[ ${2:-} == full ]]; then
+  extra=",tcpdump,openssl"
+  install -d "$work/campaign"
+  install -m 0644 campaign/*.py "$work/campaign/"
+  python3 -I -B campaign/fetch_proxy.py "$work"
+fi
 export LAB_WORK="$work"
 # A fixed base release supplies a coherent set of userspace libraries.
 # Only the older kernel and its ABI tools come from the signed snapshot.
 mmdebstrap --mode=root --variant=minbase --architectures=amd64 \
   --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
   --setup-hook='mkdir -p "$1/etc/ssl/certs" && cp /etc/ssl/certs/ca-certificates.crt "$1/etc/ssl/certs/ca-certificates.crt"' \
-  --include=ubuntu-keyring,ca-certificates,linux-libc-dev,libc6-dev,busybox-initramfs,zstd,systemd-sysv,udev,initramfs-tools,kmod,iproute2,nftables,python3,clang-18,llvm-18,libdw1t64,libnuma1,libpci3,libpython3.12t64,libslang2,libssl3t64,libtraceevent1,libunwind8,libbpf1,libcap2,libelf1t64,libzstd1 \
+  --include=ubuntu-keyring,ca-certificates,linux-libc-dev,libc6-dev,busybox-initramfs,zstd,systemd-sysv,udev,initramfs-tools,kmod,iproute2,nftables,python3,clang-18,llvm-18,libdw1t64,libnuma1,libpci3,libpython3.12t64,libslang2,libssl3t64,libtraceevent1,libunwind8,libbpf1,libcap2,libelf1t64,libzstd1"$extra" \
   --customize-hook="$work/root-hook.sh" noble "$work/root" \
   "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu noble main universe" > "$work/bootstrap.log" 2>&1 || {
     # Only expose known diagnostic categories. Never emit chroot or runner logs.
