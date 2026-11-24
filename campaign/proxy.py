@@ -95,7 +95,9 @@ def start(stack,c,peer,out):
             categories[label]['alive']=p.poll() is None
             if p.returncode is not None:
                 categories[label]['rc']=p.returncode
-        lab.put(out/'proxy-stages.json',dict(stages=stages,children=categories))
+        tmp=out/'proxy-stages.next'
+        lab.put(tmp,dict(stages=stages,children=categories))
+        tmp.replace(out/'proxy-stages.json')
     def launch(ns,args,output):
         stream=stack.enter_context((out/output).open('wb'))
         prefix=[*ns,'setpriv','--reuid=65000','--regid=65000','--clear-groups','--no-new-privs']
