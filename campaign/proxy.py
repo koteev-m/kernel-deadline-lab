@@ -78,21 +78,66 @@ def start(stack,c,peer,out):
     for f in base.iterdir():
         f.chmod(0o400)
         os.chown(f,65000,65000)
+    stages={}
+    children={}
+    def save():
+        terms={'blocked':'target blocked by a finalrule','blackhole':'blackholing connection',
+               'vless_request':'received request for tcp:127.0.0.1:18881','unknown_ca':'unknown authority',
+               'expired_cert':'certificate has expired','cert_name':'certificate is valid for',
+               'tls_failure':'tls:','refused':'connection refused','no_route':'no route to host',
+               'denied':'permission denied','invalid_request':'invalid request','reset':'connection reset',
+               'eof':'eof','local_target':'tcp:127.0.0.1:18881','lookup':'no such host',
+               'closed':'closed stream','cert_error':'x509:','accepted':' accepted '}
+        categories={}
+        for label,p in children.items():
+            log=(out/label).read_text(errors='replace').lower()
+            categories[label]={k:True for k,v in terms.items() if v in log}
+            categories[label]['alive']=p.poll() is None
+            if p.returncode is not None:
+                categories[label]['rc']=p.returncode
+        lab.put(out/'proxy-stages.json',dict(stages=stages,children=categories))
     def launch(ns,args,output):
         stream=stack.enter_context((out/output).open('wb'))
         prefix=[*ns,'setpriv','--reuid=65000','--regid=65000','--clear-groups','--no-new-privs']
-        return lab.spawn(stack,[*prefix,*map(str,args)],stream,sp.STDOUT)
-    launch(c,[sys.executable,'-I','-B',__file__,'echo'],'echo-private')
+        p=lab.spawn(stack,[*prefix,*map(str,args)],stream,sp.STDOUT)
+        children[output]=p
+        return p
+    for label,ns in [('server',c),('client',peer)]:
+        cfg=base/(label+'.json')
+        config=json.loads(cfg.read_text())
+        config['log']={'loglevel':'debug'}
+        cfg.chmod(0o600)
+        cfg.write_text(json.dumps(config))
+        cfg.chmod(0o400)
+        p=launch(ns,['env','SSL_CERT_FILE='+str(cert),XR,'run','-test','-c',cfg],label+'-test')
+        stages[label+'_test_rc']=p.wait(timeout=8)
+        save()
+        lab.require(p.returncode==0,'proxy config test')
+    stages['openssl_trust']=sp.run(['openssl','verify','-CAfile',cert,'-verify_hostname',name,cert],stdout=sp.DEVNULL,stderr=sp.DEVNULL).returncode==0
+    echo=launch(c,[sys.executable,'-I','-B',__file__,'echo'],'echo-private')
     def wait_socket(ns,port,p=None):
         lab.wait_until(lambda: (p is None or p.poll() is None) and bool(lab.cmd(*ns,'ss','-H','-lnt','sport = :'+str(port)).strip()),10)
-    wait_socket(c,18881)
+    wait_socket(c,18881,echo)
+    stages['echo_listener']=f'pid={echo.pid},' in lab.cmd(*c,'ss','-Hlntp','sport = :18881')
+    save()
     processes=[]
     for ns,label,port in [(c,'server',24445),(peer,'client',18882)]:
         proc=launch(ns,['env','SSL_CERT_FILE='+str(cert),XR,'run','-c',base/(label+'.json')],label+'-private')
-        wait_socket(ns,port,proc)
+        try:
+            wait_socket(ns,port,proc)
+        finally:
+            stages[label+'_listener']=f'pid={proc.pid},' in lab.cmd(*ns,'ss','-Hlntp','sport = :'+str(port))
+            save()
         processes.append(proc)
     launch(peer,[sys.executable,'-I','-B',__file__,'client'],'proxy-traffic')
-    lab.wait_until(lambda: '"rx"' in (out/'proxy-traffic').read_text(),12)
+    try:
+        lab.wait_until(lambda: '"rx"' in (out/'proxy-traffic').read_text(),12)
+    finally:
+        stages['transport_server']=f'pid={processes[0].pid},' in lab.cmd(*c,'ss','-H4tnp','state','established','sport = :24445')
+        stages['transport_client']=f'pid={processes[1].pid},' in lab.cmd(*peer,'ss','-H4tnp','state','established','dport = :24445')
+        stages['echo_accepted']=f'pid={echo.pid},' in lab.cmd(*c,'ss','-H4tnp','state','established','sport = :18881')
+        stages['first_echo']='"rx"' in (out/'proxy-traffic').read_text()
+        save()
     def transport():
         return lab.cmd(*c,'ss','-H4tnp','state','established','sport = :24445').strip()
     first=transport()

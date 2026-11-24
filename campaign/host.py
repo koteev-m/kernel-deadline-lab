@@ -132,6 +132,8 @@ def run_guest(work,role):
                         if isinstance(notes,list) and all(safe_note(line) for line in notes) and all(
                             re.fullmatch('[a-z_]+',k) and (v is None or type(v) in (bool,int)) for k,v in record.items()):
                             evidence[m['side']]=dict(record,stderr=notes)
+                    elif event=='proxy_stages' and numeric_tree(m.get('data')):
+                        evidence['proxy_stages']=m['data']
                     elif event=='partial' and numeric_tree(m.get('data')):
                         evidence['partial']=m['data']
                     elif event=='measurement' and numeric_tree(m.get('data')):
@@ -253,6 +255,9 @@ def campaign(work):
     return 0 if set(synthetic.values())=={PASS} and proxy==PASS else 1
 
 if __name__=='__main__':
+    if sys.argv[2:]==['tls-inspect']:
+        record=run_guest(Path(sys.argv[1]),'tls-inspect')
+        sys.exit(0 if record.get('proxy_stages') else 1)
     if sys.argv[2:]==['inspect']:
         sys.path.insert(0,str(Path(__file__).resolve().parent))
         record=run_guest(Path(sys.argv[1]),'inspect')

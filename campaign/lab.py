@@ -370,6 +370,8 @@ def run(out, mode):
             sys.path.insert(0, str(HERE))
             import proxy
             proxy.start(stack, c, peer, out)
+            if os.environ.get('LAB_INSPECT_TLS')=='1':
+                return
         if mode == 'loss':
             # Kill only the fork we created, after a real bidirectional application exchange.
             wait_until(lambda: all('"kind": "rx"' in (out / (d+'.jsonl')).read_text()

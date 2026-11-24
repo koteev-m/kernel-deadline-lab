@@ -16,7 +16,7 @@ import lab
 import measure
 
 STATE=Path('/var/lib/native-series')
-ROLES={'qualification','inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray'}
+ROLES={'qualification','inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray','tls-inspect'}
 
 def emit(event,**values):
     port.write((json.dumps(dict(event=event,**values),separators=(',',':'))+'\n').encode())
@@ -33,7 +33,7 @@ def identity():
     lab.require(platform.machine()=='x86_64' and platform.freedesktop_os_release()['VERSION_ID']=='24.04' and Path('/proc/1/comm').read_text().strip()=='systemd','guest')
     versions={k:lab.cmd('dpkg-query','-W','-f=${Version}',k).strip() for k in ('systemd','nftables','iproute2','libbpf1','clang-18','llvm-18','tcpdump','libpcap0.8t64','python3','util-linux','openssl')}
     versions.update(kernel=platform.release(),abi='6.8.0-48.48',bpftool=re.search(r'bpftool v([0-9.]+)',lab.cmd('bpftool','version'))[1])
-    if (HERE/'xray').exists() and ROLE=='xray':
+    if (HERE/'xray').exists() and ROLE in ('xray','tls-inspect'):
         v=lab.cmd(HERE/'xray','version').split()
         lab.require(v[:2]==['Xray','26.11.9'],'proxy version')
         versions['xray']=v[1]
@@ -75,8 +75,11 @@ def main():
     fw=sentinel(True)
     lab.require([list(r) for r in fw]==[['table'],['chain'],['rule']],'sentinel')
     mode='normal' if role in {'wall','sleep','reboot'} else role
+    if role=='tls-inspect':
+        mode='xray'
     # Only the normal series runs the destructive, disposable qdisc boundary control.
     env=dict(os.environ,LAB_BOUNDARY='1' if role=='normal' else '0')
+    env['LAB_INSPECT_TLS']='1' if role=='tls-inspect' else '0'
     with (STATE/'private-driver.log').open('wb') as private:
         proc=sp.Popen([sys.executable,'-I','-B',HERE/'lab.py',mode,out],
                       stdout=private,stderr=private,env=env)
@@ -110,6 +113,8 @@ def main():
                     lab.put(STATE/'clock-event',dict(before=a,after=b))
                     emit('clock',before=a,after=b)
             time.sleep(.18)
+    if (out/'proxy-stages.json').exists():
+        emit('proxy_stages',data=measure.read(out,'proxy-stages'))
     if role=='inspect':
         for dev in ('uc0','up0'):
             note=out/(dev+'.instrument.json')
