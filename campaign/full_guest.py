@@ -19,7 +19,7 @@ import lab
 import measure
 
 STATE=Path('/var/lib/native-series')
-ROLES={'qualification','inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray','tls-inspect','closure-short','wall-final','proxy-final'}
+ROLES={'qualification','inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray','tls-inspect','closure-short','wall-final','proxy-final','xray-repro','xray-short','xray-proof'}
 
 def emit(event,**values):
     port.write((json.dumps(dict(event=event,**values),separators=(',',':'))+'\n').encode())
@@ -36,7 +36,7 @@ def identity():
     lab.require(platform.machine()=='x86_64' and platform.freedesktop_os_release()['VERSION_ID']=='24.04' and Path('/proc/1/comm').read_text().strip()=='systemd','guest')
     versions={k:lab.cmd('dpkg-query','-W','-f=${Version}',k).strip() for k in ('systemd','nftables','iproute2','libbpf1','clang-18','llvm-18','tcpdump','libpcap0.8t64','python3','util-linux','openssl')}
     versions.update(kernel=platform.release(),abi='6.8.0-48.48',bpftool=re.search(r'bpftool v([0-9.]+)',lab.cmd('bpftool','version'))[1])
-    if (HERE/'xray').exists() and ROLE in ('xray','tls-inspect','closure-short','proxy-final'):
+    if (HERE/'xray').exists() and ROLE in ('xray','tls-inspect','closure-short','proxy-final','xray-repro','xray-short','xray-proof'):
         v=lab.cmd(HERE/'xray','version').split()
         lab.require(v[:2]==['Xray','26.11.9'],'proxy version')
         versions['xray']=v[1]
@@ -86,6 +86,9 @@ def main():
     if role in ('closure-short','wall-final','proxy-final'):
         mode='qualification' if role=='closure-short' else 'normal'
         env['LAB_TARGET']=role
+    if role in ('xray-repro','xray-short','xray-proof'):
+        env['LAB_TARGET']=role
+        mode='normal' if role=='xray-proof' else 'qualification'
     with (STATE/'private-driver.log').open('wb') as private:
         proc=sp.Popen([sys.executable,'-I','-B',HERE/'lab.py',mode,out],
                       stdout=private,stderr=private,env=env)
@@ -119,6 +122,11 @@ def main():
                     lab.put(STATE/'clock-event',dict(before=a,after=b))
                     emit('clock',before=a,after=b)
             time.sleep(.18)
+    if (out/'xray-trial.json').exists():
+        trial=measure.read(out,'xray-trial')
+        trial['sentinel_intact']=sentinel()==fw
+        trial['driver_exit']=proc.returncode
+        emit('xray_trial',data=trial)
     for protocol in ('tls','reality'):
         if (out/protocol/'status.json').is_file():
             status=measure.read(out/protocol,'status')

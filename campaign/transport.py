@@ -113,12 +113,30 @@ class Fixture:
         tags={'unknown_ca':'unknown authority','rejected_target':'target blocked by a finalrule',
               'refused':'connection refused','reset':'connection reset','auth_error':'authentication failed',
               'cert_error':'x509:','invalid':'invalid','sni':'server name mismatch','peer_closed':'eof',
+              'no_buffers':'no buffer space available','broken_pipe':'broken pipe','conn_timed_out':'connection timed out',
+              'timeout_io':'i/o timeout','network_error':'network is unreachable','aborted':'connection aborted',
               'permission':'permission denied','resolve_error':'no such host','routing_error':'no route to host',
               'vless_request':'received request for tcp:127.0.0.1:'+str(self.echo_port)}
         children={}
         for label,p in self.procs.items():
             d={'alive':p.poll() is None}
             if p.returncode is not None: d['rc']=p.returncode
+            if label in ('echo','stream') and p.returncode is not None:
+                messages=(self.out/label).read_text(errors='replace')
+                for row in messages.splitlines():
+                    if row.startswith('{"exit_boot_ns":'):
+                        note=json.loads(row)
+                        if type(note.get('exit_boot_ns')) is int:
+                            d['exit_boot_ns']=note['exit_boot_ns']
+                        if type(note.get('operation_line')) is int:
+                            d['operation_line']=note['operation_line']
+                        if type(note.get('errno')) is int:
+                            d['errno']=note['errno']
+                for k,term in {'closed_stream':'RuntimeError: closed echo stream',
+                               'short_write':'RuntimeError: short stream write',
+                               'broken_pipe':'BrokenPipeError:', 'reset':'ConnectionResetError:',
+                               'would_block':'BlockingIOError:', 'timed_out':'TimeoutError:'}.items():
+                    d[k]=term in messages
             if label not in ('echo','stream'):
                 msg=(self.out/label).read_text(errors='replace').lower()
                 d.update({k:True for k,v in tags.items() if v in msg})
@@ -220,6 +238,8 @@ class Fixture:
         self.failure_stage=7
         wait(lambda:any(r[0]=='rx' for r in records(self.out/'stream')),12)
         self.sockets=self.external()
+        self.stages['initial_server_inode']=self.sockets[0][2]
+        self.stages['initial_client_inode']=self.sockets[1][2]
         self.stages['first_echo']=True
         self.failure_stage=0
 
@@ -236,19 +256,37 @@ class Fixture:
         sent={r[1]:r[2] for r in stream_rows if r[0]=='tx'}
         echoes={r[1]:r[2] for r in echo_rows}
         replies=[r for r in stream_rows if r[0]=='rx']
-        lab.require(len(echoes)==len(echo_rows) and all(sent.get(i)==stamp for i,stamp in echoes.items()) and
-                    all(echoes.get(r[1])==r[2] for r in replies) and [r[1] for r in replies]==list(range(len(replies))),'echo payload provenance')
+        provenance=(len(echoes)==len(echo_rows) and all(sent.get(i)==stamp for i,stamp in echoes.items()) and
+                    all(echoes.get(r[1])==r[2] for r in replies) and [r[1] for r in replies]==list(range(len(replies))))
         c,peer=self.net
         def listening(ns,name,port):
             return f'pid={self.procs[name].pid},' in lab.cmd(*ns,'ss','-Hlntp','sport = :'+str(port))
-        return dict(pre_replies=sum(r[3]<t for r in replies),server_pre=sum(r[3]<t for r in echo_rows),
+        result=dict(payload_provenance=provenance,pre_replies=sum(r[3]<t for r in replies),server_pre=sum(r[3]<t for r in echo_rows),
                     fresh_server=sum(r[2]>=t for r in echo_rows),fresh_replies=sum(r[2]>=t for r in replies),
                     queued_replies=sum(r[2]<t<=r[3] for r in replies),post_tx=sum(stamp>=t for stamp in sent.values()),
                     last_reply=max((r[3] for r in replies),default=0),last_server=max((r[3] for r in echo_rows),default=0),
                     first_post=min((stamp for stamp in sent.values() if stamp>=t),default=0),
-                    same_transport=self.external()==self.sockets,server_inode=self.sockets[0][2],client_inode=self.sockets[1][2],
-                    server_listener=listening(c,'server',self.port),client_listener=listening(peer,'client',18884 if self.protocol=='reality' else 18882),
+                    server_inode=self.sockets[0][2],client_inode=self.sockets[1][2],
                     participants_alive=all(p.poll() is None for k,p in self.procs.items() if not k.endswith('-test')))
+        categories={'proxy route':1,'unexpected proxy listener':2,'unexpected external socket':3,
+                    'external transport identity':4,'proxy tuple pairing':5}
+        try:
+            result['same_transport']=self.external()==self.sockets
+        except (ValueError,RuntimeError,AttributeError,IndexError,OSError,sp.SubprocessError) as exc:
+            result['same_transport']=False
+            result['transport_readback_error']=categories.get(str(exc),6)
+        for label,ns,port in [('server',c,self.port),('client',peer,18884 if self.protocol=='reality' else 18882)]:
+            try:
+                result[label+'_listener']=listening(ns,label,port)
+            except (OSError,sp.SubprocessError):
+                result[label+'_listener_read_error']=True
+        return result
 
 if __name__=='__main__':
-    {'echo':echo,'stream':stream}[sys.argv[1]](int(sys.argv[2]))
+    try:
+        {'echo':echo,'stream':stream}[sys.argv[1]](int(sys.argv[2]))
+    except (RuntimeError,OSError) as exc:
+        # No access credentials or application payloads in a diagnostic record.
+        frame=next((fr for fr in reversed(__import__('traceback').extract_tb(exc.__traceback__)) if fr.name in ('stream','echo')),None)
+        print(json.dumps({'exit_boot_ns':lab.now(),'errno':getattr(exc,'errno',None),'operation_line':frame.lineno if frame else 0}),flush=True)
+        raise

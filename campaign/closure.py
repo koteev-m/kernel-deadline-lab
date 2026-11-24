@@ -20,7 +20,7 @@ def proxy_ok(e,protocol):
             e.get('measure',{}).get(side,{}).get('rx_clock',{}).get('reality_packets',0)>0
             for side in ('left','right')):
             return False
-    return (all(result.get(k) is True for k in ('same_transport','participants_alive','server_listener','client_listener'))
+    return (all(result.get(k) is True for k in ('payload_provenance','same_transport','participants_alive','server_listener','client_listener'))
             and result.get('fresh_server')==result.get('fresh_replies')==0
             and result.get('server_pre',0)>=result.get('pre_replies',0)>1 and result.get('post_tx',0)>1
             and 0<result['last_reply'] and result['first_post']>=t>0)

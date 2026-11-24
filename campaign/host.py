@@ -158,6 +158,8 @@ def run_guest(work,role):
                         ledger['count']+=len(values)
                         ledger['late']+=sum(x>=deadline for x in values)
                         ledger['last']=values[-1]
+                    elif event=='xray_trial' and role.startswith('xray-') and numeric_tree(m.get('data')):
+                        evidence['trial']=m['data']
                     elif event=='transport_case' and m.get('protocol') in ('tls','reality') and numeric_tree(m.get('data')):
                         evidence.setdefault('transport',{})[m['protocol']]=m['data']
                     elif event=='proxy_stages' and numeric_tree(m.get('data')):

@@ -274,6 +274,9 @@ def run(out, mode):
                 'pref', '5', 'matchall', 'skip_hw', 'action', 'gact', 'continue')
             add(ns, dev, 20, deny)
             filters(ns, dev, {20: deny_tag})
+        if os.environ.get('LAB_TARGET') in ('xray-repro','xray-short','xray-proof'):
+            import xray_case
+            return xray_case.run(sys.modules[__name__],stack,work,out,ends,foreign,before,hostfw,deny_tag,mode)
         # Passive observers and pre-existing sockets are created before the permit.
         apps = [workload(stack, ns, out, dev, token, dev[1]) for dev, ns, _, _ in ends]
         if mode == 'inspect':

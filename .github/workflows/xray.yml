@@ -1,0 +1,32 @@
+name: Isolated REALITY transport qualification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: offline-kernel-preflight
+  cancel-in-progress: false
+jobs:
+  native:
+    if: github.event_name == 'workflow_dispatch' && github.event.repository.private == false && github.event.repository.id != null && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build one authenticated offline disk
+        run: |
+          test "$(uname -m)" = x86_64
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root bash build.sh "$RUNNER_TEMP/native" full
+          dpkg-query -W -f='QEMU ${Version}\n' qemu-system-x86
+      - name: Observe a single REALITY stream
+        run: |
+          set -o pipefail
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root python3 -I -B campaign/xray_only.py "$RUNNER_TEMP/native" | tee "$RUNNER_TEMP/xray.log"
+      - name: Record typed observations
+        if: always()
+        run: |
+          if test -s "$RUNNER_TEMP/xray.log"; then
+            { echo '### Transport observations'; echo '~~~text'; cat "$RUNNER_TEMP/xray.log"; echo '~~~'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
