@@ -16,7 +16,7 @@ import lab
 import measure
 
 STATE=Path('/var/lib/native-series')
-ROLES={'normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray'}
+ROLES={'inspect','normal','absent','delay','paused','late','loss','wall','sleep','reboot','xray'}
 
 def emit(event,**values):
     port.write((json.dumps(dict(event=event,**values),separators=(',',':'))+'\n').encode())
@@ -110,8 +110,15 @@ def main():
                     lab.put(STATE/'clock-event',dict(before=a,after=b))
                     emit('clock',before=a,after=b)
             time.sleep(.18)
+    if role=='inspect':
+        for dev in ('uc0','up0'):
+            note=out/(dev+'.instrument.json')
+            if note.is_file():
+                emit('instrument',side=dev,data=json.loads(note.read_text()))
     if proc.returncode:
         partial={}
+        if (out/'readiness-fault.json').is_file():
+            partial['readiness']=measure.read(out,'readiness-fault')
         if (out/'ticket.json').is_file():
             t=measure.read(out,'ticket')
             partial.update(start_ns=t['start'],deadline_ns=t['deadline'])

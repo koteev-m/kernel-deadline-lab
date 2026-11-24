@@ -171,8 +171,9 @@ def resident(ns, dev, peerip, family):
 
 def workload(stack, ns, out, name, *args):
     log = stack.enter_context((out / (name + '.jsonl')).open('xb', buffering=0))
+    err = stack.enter_context((out / (name+'.stderr')).open('xb'))
     return spawn(stack, [*ns, sys.executable, '-I', '-B', '-c',
-                         (HERE / 'traffic.py').read_text(), *args], log)
+                         (HERE / 'traffic.py').read_text(), *args], log, err)
 
 
 def capture(stack, ns, out, dev):
@@ -188,6 +189,25 @@ def wait_until(predicate, timeout):
     end = time.monotonic() + timeout
     while not predicate():
         require(time.monotonic() < end, 'instrumentation did not become ready')
+        time.sleep(.05)
+
+
+def wait_observers(out, stage, names, processes, timeout, predicate):
+    expiry = time.monotonic() + timeout
+    while True:
+        states = {dev: predicate(dev) for dev in names}
+        codes = {dev: p.poll() for dev, p in zip(names, processes)}
+        dead = any(code is not None for code in codes.values())
+        if not dead and all(all(flags.values()) for flags in states.values()):
+            return
+        if dead or time.monotonic() >= expiry:
+            # Fixed schema only. Keep a live flag separate from an actual exit code.
+            report = {'stage': stage}
+            for dev in names:
+                report[dev] = dict(states[dev], exited=codes[dev] is not None,
+                                   code=codes[dev] if codes[dev] is not None else 0)
+            put(out / 'readiness-fault.json', report)
+            raise RuntimeError('instrumentation did not become ready')
         time.sleep(.05)
 
 
@@ -237,13 +257,20 @@ def run(out, mode):
             filters(ns, dev, {20: deny_tag})
         # Passive observers and pre-existing sockets are created before the permit.
         apps = [workload(stack, ns, out, dev, token, dev[1]) for dev, ns, _, _ in ends]
-        wait_until(lambda: all('"kind": "ready"' in (out / (d + '.jsonl')).read_text()
-                               and '"kind": "migrated"' in (out / (d + '.jsonl')).read_text()
-                               for d, *_ in ends), 8)
-        # 'any' in each fresh netns captures while the private link is still down.
+        if mode == 'inspect':
+            sys.path.insert(0,str(HERE))
+            import readiness
+            readiness.do(sys.modules[__name__],stack,out,ends,apps)
+            return
+        names = [d for d, *_ in ends]
+        def endpoint_ready(dev):
+            log = (out / (dev+'.jsonl')).read_text()
+            return {'ready': '"kind": "ready"' in log, 'migrated': '"kind": "migrated"' in log}
+        wait_observers(out, 1, names, apps, 8, endpoint_ready)
         caps = [capture(stack, ns, out, dev) for dev, ns, _, _ in ends]
-        for dev, ns, _, _ in ends:
-            wait_until(lambda: 'listening on' in (out / (dev + '.capture')).read_text(), 5)
+        def capture_ready(dev):
+            return {'listening': 'listening on' in (out/(dev+'.capture')).read_text()}
+        wait_observers(out, 2, names, caps, 5, capture_ready)
         ticket = dict(run=token, boot=boot(), start=now(), mode=mode)
         ticket['deadline'] = ticket['start'] + WINDOW
         put(out / 'ticket.json', ticket)
@@ -397,7 +424,7 @@ def run(out, mode):
 def main():
     os.environ['LC_ALL'] = 'C'
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['normal','paused','delay','late','loss','absent','xray','old-boot'])
+    parser.add_argument('mode', choices=['inspect','normal','paused','delay','late','loss','absent','xray','old-boot'])
     parser.add_argument('output', type=Path)
     args = parser.parse_args()
     if args.mode == 'old-boot':

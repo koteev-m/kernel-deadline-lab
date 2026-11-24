@@ -121,6 +121,13 @@ def run_guest(work,role):
                         evidence['sleep_intent']=True
                     elif event=='clock' and numeric_tree([m['before'],m['after']]):
                         evidence['clock']=[m['before'],m['after']]
+                    elif event=='instrument' and role=='inspect' and m.get('side') in ('uc0','up0'):
+                        from readiness import safe_note
+                        record=m['data']
+                        notes=record.pop('stderr')
+                        if isinstance(notes,list) and all(safe_note(line) for line in notes) and all(
+                            re.fullmatch('[a-z_]+',k) and (v is None or type(v) in (bool,int)) for k,v in record.items()):
+                            evidence[m['side']]=dict(record,stderr=notes)
                     elif event=='partial' and numeric_tree(m.get('data')):
                         evidence['partial']=m['data']
                     elif event=='measurement' and numeric_tree(m.get('data')):
@@ -229,4 +236,10 @@ def campaign(work):
     return 0 if set(synthetic.values())=={PASS} and proxy==PASS else 1
 
 if __name__=='__main__':
+    if sys.argv[2:]==['inspect']:
+        sys.path.insert(0,str(Path(__file__).resolve().parent))
+        record=run_guest(Path(sys.argv[1]),'inspect')
+        complete=all(isinstance(record.get(d),dict) for d in ('uc0','up0'))
+        print('RESULT',json.dumps({'diagnostic_complete':complete}),flush=True)
+        sys.exit(0 if complete else 1)
     sys.exit(campaign(Path(sys.argv[1])))
