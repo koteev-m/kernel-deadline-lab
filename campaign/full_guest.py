@@ -126,10 +126,13 @@ def main():
         trial=measure.read(out,'xray-trial')
         trial['sentinel_intact']=sentinel()==fw
         trial['driver_exit']=proc.returncode
-        emit('xray_trial',data=trial)
+        for key,value in trial.items():
+            emit('xray_part',key=key,data=value)
     for protocol in ('tls','reality'):
         if (out/protocol/'status.json').is_file():
             status=measure.read(out/protocol,'status')
+            if (out/protocol/'application.json').is_file():
+                status['application']=measure.read(out/protocol,'application')
             if (out/protocol/'end.json').is_file():
                 status['end']=measure.read(out/protocol,'end')
             emit('transport_case',protocol=protocol,data=status)

@@ -18,6 +18,7 @@ jobs:
       - name: Build one authenticated offline disk
         run: |
           test "$(uname -m)" = x86_64
+          echo "126152f3937f7d6aefda80d72eb2c4d95330ded3d861e94575cbec7d39e37910  gate.bpf.c" | sha256sum --check
           sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C HOME=/root bash build.sh "$RUNNER_TEMP/native" full
           dpkg-query -W -f='QEMU ${Version}\n' qemu-system-x86
       - name: Observe a single REALITY stream

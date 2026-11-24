@@ -19,7 +19,7 @@ sys.path.insert(0,str(HERE))
 import lab
 
 def records(path):
-    return [json.loads(row) for row in path.read_text().splitlines() if row.endswith(']')]
+    return [json.loads(row) for row in path.read_text().splitlines() if row.startswith('[') and row.endswith(']')]
 
 def emit(*values):
     print(json.dumps(values),flush=True)
@@ -74,7 +74,7 @@ def endpoint(value):
     address=ipaddress.ip_address(host.strip('[]').split('%')[0])
     return (getattr(address,'ipv4_mapped',None) or address),int(port)
 
-def transport(ns,dev,pid,side,port):
+def transport(ns,dev,pid,side,port,*,allow_absent=False):
     own,other=('192.0.2.1','192.0.2.2') if side=='server' else ('192.0.2.2','192.0.2.1')
     links=json.loads(lab.cmd(*ns,'ip','-j','link'))
     lab.require({r['ifname'] for r in links}=={'lo',dev} and
@@ -93,10 +93,12 @@ def transport(ns,dev,pid,side,port):
         b,rport=endpoint(remote)
         if a.is_loopback and b.is_loopback:
             continue
-        lab.require(proto=='tcp' and state=='ESTAB' and str(a)==own and str(b)==other and
+        lab.require(proto=='tcp' and (state=='ESTAB' or allow_absent) and str(a)==own and str(b)==other and
                     (lport if side=='server' else rport)==port,'unexpected external socket')
         inode=int(re.search(r'\bino:(\d+)',line)[1])
         external.append([lport,rport,inode])
+    if allow_absent and not external:
+        return []
     lab.require(len(external)==1,'external transport identity')
     return external[0]
 
@@ -128,6 +130,11 @@ class Fixture:
                         note=json.loads(row)
                         if type(note.get('exit_boot_ns')) is int:
                             d['exit_boot_ns']=note['exit_boot_ns']
+                        for field in ('reason','operation','tcp_state','inode','local_port','created','submitted',
+                                      'bytes_sent','replies','pending_frames','write_offset','partial_writes',
+                                      'write_eagain','read_eagain','pending_rx'):
+                            if type(note.get(field)) is int:
+                                d[field]=note[field]
                         if type(note.get('operation_line')) is int:
                             d['operation_line']=note['operation_line']
                         if type(note.get('errno')) is int:
@@ -268,6 +275,13 @@ class Fixture:
                     first_post=min((stamp for stamp in sent.values() if stamp>=t),default=0),
                     server_inode=self.sockets[0][2],client_inode=self.sockets[1][2],
                     participants_alive=all(p.poll() is None for k,p in self.procs.items() if not k.endswith('-test')))
+        made=[r for r in stream_rows if r[0]=='made']
+        submitted=[r for r in stream_rows if r[0]=='tx']
+        result.update(created=len(made),created_after=sum(r[2]>=t for r in made),submitted=len(submitted),
+                      submitted_after=sum(len(r)>3 and r[3]>=t for r in submitted),
+                      first_created=made[0][2] if made else 0,last_created=made[-1][2] if made else 0)
+        # Preserve the application measurements before independent socket reads.
+        (self.out/'application.json').write_text(json.dumps(result))
         categories={'proxy route':1,'unexpected proxy listener':2,'unexpected external socket':3,
                     'external transport identity':4,'proxy tuple pairing':5}
         try:
@@ -284,6 +298,13 @@ class Fixture:
 
 if __name__=='__main__':
     try:
+        if os.environ.get('LAB_TARGET') in ('xray-short','xray-proof'):
+            import ctypes
+            name=b'measure-stream' if sys.argv[1]=='stream' else b'measure-echo'
+            lab.require(ctypes.CDLL(None).prctl(15,name,0,0,0)==0,'process witness name')
+        if sys.argv[1]=='stream' and os.environ.get('LAB_TARGET') in ('xray-short','xray-proof'):
+            import stream_probe
+            sys.exit(stream_probe.run(int(sys.argv[2])))
         {'echo':echo,'stream':stream}[sys.argv[1]](int(sys.argv[2]))
     except (RuntimeError,OSError) as exc:
         # No access credentials or application payloads in a diagnostic record.
