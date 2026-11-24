@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import assess
+import seq_assess
 
 def read(d,name):
     return assess.load(d/(name+'.json'))
@@ -18,13 +19,17 @@ def measure(d,role):
     start,t=ticket['start'],ticket['deadline']
     arm,watch,end=(read(d,k) for k in ('attached','watch','end'))
     report={'start_ns':start,'deadline_ns':t,'duration_ns':t-start,'armed_ns':arm['at']}
+    probes={} if role in ('late','absent') else seq_assess.evaluate(d,t,watch['ifindexes'])
+    report['probes']=probes
     output=io.StringIO()
     try:
         with contextlib.redirect_stdout(output):
-            assess.assess(d,qualification=role=="qualification")
+            assess.assess(d,qualification=role=="qualification",probes=probes)
         original=json.loads(output.getvalue())
     except (KeyError,IndexError,StopIteration,ValueError) as exc:
         original={}
+        name=re.sub('[^A-Z0-9]+','_',str(exc).upper()).strip('_')
+        report['assessor_check']=name[:160] if isinstance(exc,ValueError) and name else type(exc).__name__.upper()
         report['assessor_line']=__import__('traceback').extract_tb(exc.__traceback__)[-1].lineno
     report['source_assessor']={'SYNTHETIC_CASE_OBSERVED':1,'REVIEW_REQUIRED':2,'DELIVERY_VIOLATION':3}.get(original.get('status'),0)
     report['origin_violations']=len(original.get('violations',[]))
@@ -65,7 +70,7 @@ def measure(d,role):
         side['attach_bracket_ns']=arm['intervals'].get(dev,[])
         def programs(state):
             return {str(r['pref']):[r['options']['prog']['id'],r['options']['prog']['tag']]
-                    for r in state['tc'] if r['kind']=='bpf' and 'options' in r}
+                    for r in state['tc'] if r['kind']=='bpf' and r['pref'] in (10,20) and 'options' in r}
         side['programs']=programs(arm['states'][dev])
         side['programs_unchanged']=side['programs']==programs(end['state'][dev])
         side['test_before']=next(x['action'] for x in watch['brackets'] if x['dev']==dev)

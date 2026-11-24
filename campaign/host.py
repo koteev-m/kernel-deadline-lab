@@ -32,9 +32,11 @@ def numeric_tree(value,key=''):
     if type(value) in (bool,int):
         return abs(value)<=10**20
     if isinstance(value,list):
-        return len(value)<=5 and all(numeric_tree(x,key) for x in value)
+        return len(value)<=(20 if key=='errors' else 5) and all(numeric_tree(x,key) for x in value)
     if isinstance(value,dict):
         return len(value)<80 and all(re.fullmatch(r'[a-z0-9_-]{1,40}',k) and numeric_tree(v,k) for k,v in value.items())
+    if isinstance(value,str) and key in ('assessor_check','errors'):
+        return bool(re.fullmatch('[A-Z][A-Z0-9_]{0,159}',value))
     return isinstance(value,str) and key in ('10','20') and bool(re.fullmatch('[0-9a-f]{16}',value))
 
 def run_guest(work,role):
@@ -172,6 +174,8 @@ def judged(e):
     if not m:
         return NP
     sides=[m['left'],m['right']]
+    if any(p.get('peer_excess') for p in m.get('probes',{}).values()):
+        return FAIL
     if m['origin_violations'] or any(s['wire_fresh'] or s['rx_after_new'] for s in sides):
         return FAIL
     role=e['role']
@@ -189,7 +193,13 @@ def judged(e):
             return NP
         if not closed and (s['wire_boundary'] or s['wire_uncalibrated']):
             return NP
-        if not closed and not all(s['established'+f] and s['retrans'+f]>0 for f in ('4','6')):
+        if not closed and not all(s['established'+f] for f in ('4','6')):
+            return NP
+    if not closed:
+        probes=m.get('probes',{})
+        if set(probes)!={'uc04','uc06','up04','up06'} or not all(
+                p.get('verified') and p['delta_post']>0 and p['delta_pre']>0 and p['pcap']>=2
+                and p['post']>0 and p['peer_post']==0 for p in probes.values()):
             return NP
     if role in ('delay','paused','late'):
         least=min(s['attach_bracket_ns'][0] for s in sides)

@@ -19,6 +19,9 @@ HERE = Path(__file__).resolve().parent
 NS = Path('/proc/self/ns/net')
 SEC = 1_000_000_000
 WINDOW = 600 * SEC
+OBSERVERS = {}
+sys.path.insert(0,str(HERE))
+import retrans
 
 
 def require(ok, message):
@@ -114,6 +117,12 @@ def filters(ns, dev, tags):
     rows = json.loads(cmd(*ns, 'tc', '-j', '-s', 'filter', 'show', 'dev', dev, 'egress'))
     # tc can emit an additional header row without filter options.
     leaves = [r for r in rows if 'options' in r]
+    if dev+'egress' in OBSERVERS:
+        probes=[r for r in leaves if r['pref']==1]
+        require(len(probes)==1 and probes[0]['kind']=='bpf' and probes[0]['protocol']=='all' and
+                probes[0].get('chain',0)==0 and probes[0]['options']['direct-action'] and probes[0]['options']['skip_hw'] and
+                probes[0]['options']['prog']['id']==OBSERVERS[dev+'egress'], 'OBS_PREF_CHANGED')
+        leaves=[r for r in leaves if r['pref']!=1]
     require(sorted(r['pref'] for r in leaves) == sorted([5, *tags]), 'filter order/count')
     require(all(r.get('chain', 0) == 0 and r['protocol'] == 'all' for r in leaves),
             'unexpected protocol or chain')
@@ -142,7 +151,7 @@ def filters(ns, dev, tags):
 def bracket(ns, dev, state, ticket, packet):
     # Test a copy of one Ethernet frame inside the kernel, independently of
     # real traffic and after tc's loading process has exited.
-    rows = [r for r in state['tc'] if r.get('kind')=='bpf' and 'options' in r]
+    rows = [r for r in state['tc'] if r.get('kind')=='bpf' and r['pref'] in (10,20) and 'options' in r]
     row = min(rows, key=lambda r: r['pref'])
     before = now()
     reply = json.loads(cmd(*ns, 'bpftool','-j','prog','run','id',
@@ -285,6 +294,9 @@ def run(out, mode):
             seen = (out/(dev+'.capture')).read_text().splitlines()
             return {'listening': bool(seen and json.loads(seen[0])==expected)}
         wait_observers(out, 2, names, caps, 5, capture_ready)
+        active = mode not in ('absent','late')
+        if active:
+            OBSERVERS.update(retrans.mount_observers(sys.modules[__name__],ends,work))
         ticket = dict(run=token, boot=boot(), start=now(), mode=mode)
         ticket['deadline'] = ticket['start'] + window(mode)
         put(out / 'ticket.json', ticket)
@@ -353,6 +365,7 @@ def run(out, mode):
                 cmd(*ns, 'ip', fam, 'neigh', 'replace', ip, 'lladdr', '02:00:00:68:00:0' + j,
                     'nud', 'permanent', 'dev', dev)
                 require(resident(ns, dev, ip, fam), 'wrong path')
+        probes = retrans.launch(sys.modules[__name__],stack,ends,out,ticket['deadline']) if active else []
         if mode == 'xray':
             sys.path.insert(0, str(HERE))
             import proxy
@@ -402,6 +415,8 @@ def run(out, mode):
                         f'ino:{inode}' in ss.split() and 'uid:65000' in ss.split(),
                         'listener owner or inode changed')
                 listeners[d][family] = ss.strip()
+        if active:
+            retrans.collect(sys.modules[__name__],ends,out,probes,OBSERVERS)
         if mode == 'xray':
             proxy.finish(c, peer, out, ticket)
         put(out/'end.json', dict(end=now(), first=first, state=end, brackets=final_checks, firewall_after=after,

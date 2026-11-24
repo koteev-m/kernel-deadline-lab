@@ -117,6 +117,12 @@ def main():
                 emit('instrument',side=dev,data=json.loads(note.read_text()))
     if proc.returncode:
         partial={'driver_exit':proc.returncode}
+        for dev in ('uc0','up0'):
+            pe=out/(dev+'.probe-error')
+            if pe.exists():
+                for ln in pe.read_text().splitlines():
+                    if re.fullmatch(r'(?:ValueError|PermissionError|TimeoutError|ConnectionRefusedError|OSError): [A-Za-z0-9 _.,:\[\]-]{1,90}',ln):
+                        emit('probe_note',label=dev,text=ln)
         if (out/'environment.json').exists():
             for side in ('uc0','up0'):
                 log=out/(side+'.capture')
@@ -129,6 +135,11 @@ def main():
                         if 'frames' in v: partial[side+'_frames']=v['frames']
         mark=(STATE/'private-driver.log').read_text(errors='replace')
         for entry in mark.splitlines():
+            if any(tag in entry for tag in ('libbpf:', 'Error:', ' error:', 'RTNETLINK', 'Cannot find', 'Unknown argument')):
+                import readiness
+                safe=re.sub(r'/[A-Za-z0-9._/-]+','[guest-path]',entry.strip()[:200])
+                if readiness.safe_note(safe):
+                    emit('probe_note',label='driver',text=safe)
             if entry.startswith('lab-sites '):
                 partial['sites']=[int(i) for i in entry.split()[1:] if i.isdigit()][-5:]
             elif entry.startswith('lab-fault ') or entry.startswith('Error:') or entry.startswith('RTNETLINK answers:'):

@@ -37,7 +37,7 @@ def packets(path, ifindex):
             yield sec*10**9 + frac*scale, data
 
 
-def assess(d, *, qualification=False):
+def assess(d, *, qualification=False, probes=None):
     ticket, watch, end = [load(d / (key+'.json')) for key in ('ticket','watch','end')]
     start, t, mode = ticket['start'], ticket['deadline'], ticket['mode']
     need((mode=='qualification') == qualification, 'wrong measurement class')
@@ -47,6 +47,9 @@ def assess(d, *, qualification=False):
     need({r['dev'] for r in end['brackets'] if r['action']==2 and r['before']>=t}
          == {'uc0','up0'}, 'missing native expired test-run')
     active = mode not in ('absent','late')
+    if active and probes is None:
+        import seq_assess
+        probes=seq_assess.evaluate(d,t,watch['ifindexes'])
     clock = lines(d/'clocks.jsonl')
     need(len(clock)>2 and all(a<=b for a,_,b,_ in clock), 'clock brackets')
     # Packet capture uses realtime. Wall steps, long scheduling gaps and suspend
@@ -87,10 +90,8 @@ def assess(d, *, qualification=False):
                 keys = lambda rows: {tuple(r['connection']) for r in rows if r['kind']=='tx'
                                      and r['family']==family and r['stream']=='tcp'}
                 need(keys(r for r in app if r['at'] < t) & keys(post), 'established TCP lost before boundary')
-                before = [r for r in app if r['kind']=='tcp-info' and r['family']==family and r['at']<t]
-                after = [r for r in app if r['kind']=='tcp-info' and r['family']==family and r['at']>=t]
-                need(any(b['connection']==a['connection'] and a['retrans']>b['retrans']
-                         for a in after for b in before[-1:]), 'no retransmission witness')
+                proof=probes[dev+family]
+                need(proof.get('verified',False),'TCP_PROBE_'+dev.upper()+family+'_'+('_'.join(proof['errors']) or 'MISSING'))
         need(end['state'][dev]['packet_attempts'] > end['first'][dev], 'no packets reached classifier after T')
         diag = (d/(dev+'.capture')).read_text()
         messages = [json.loads(x) for x in diag.splitlines()]
