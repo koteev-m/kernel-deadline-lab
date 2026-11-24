@@ -60,4 +60,25 @@ class Stream(unittest.TestCase):
             self.assertEqual(rows[-1]['replies'],1)
             self.assertEqual(rows[-1]['pending_rx'],0)
 
+class Telemetry(unittest.TestCase):
+    def test_both_numbered_veths_survive_serial_validation(self):
+        import host
+        evidence={'role':'xray-short'}
+        witness={'attempt':{'after':{'payload_frames':3}},'wire':{'kernel_sha256':'a'*64,'at_or_after':0},'capture':{'drops':0}}
+        with redirect_stdout(io.StringIO()) as output:
+            for side in ('uc0','up0'):
+                message=json.loads(json.dumps({'event':'xray_part','key':side,'data':witness}))
+                host.record_xray_part(evidence,message)
+        self.assertEqual(evidence['trial'],{'uc0':witness,'up0':witness})
+        self.assertEqual(len(output.getvalue().splitlines()),2)
+        self.assertNotIn('trial_record_errors',evidence)
+    def test_rejected_or_duplicate_records_remain_visible(self):
+        import host
+        evidence={'role':'xray-proof'}
+        with redirect_stdout(io.StringIO()) as output:
+            for key,value in [('uc0',{'drops':0}),('uc0',{'drops':9}),('up0','invalid'),('unknown',{})]:
+                host.record_xray_part(evidence,{'key':key,'data':value})
+        self.assertEqual(evidence['trial_record_errors'],3)
+        self.assertEqual(evidence['trial'],{'uc0':{'drops':0}})
+        self.assertNotIn('invalid',output.getvalue())
 if __name__=='__main__': unittest.main()

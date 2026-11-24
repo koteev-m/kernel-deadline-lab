@@ -45,6 +45,23 @@ def numeric_tree(value,key=''):
         return bool(re.fullmatch('[A-Z][A-Z0-9_]{0,159}',value))
     return isinstance(value,str) and key in ('10','20') and bool(re.fullmatch('[0-9a-f]{16}',value))
 
+XRAY_PARTS = frozenset({
+    'duration','client_tcp','server_tcp','gate_before','gate_after','initial','before','crossed',
+    'later','six','final','trace','uc0','up0','application_read_error','control_stream',
+    'control_exchanges','firewall_same','foreign_alive','sentinel_intact','driver_exit',
+})
+
+def record_xray_part(evidence,message):
+    key=message.get('key')
+    data=message.get('data')
+    trial=evidence.setdefault('trial',{})
+    if not isinstance(key,str) or key not in XRAY_PARTS or key in trial or not numeric_tree(data):
+        evidence['trial_record_errors']=evidence.get('trial_record_errors',0)+1
+        return
+    trial[key]=data
+    if key in ('uc0','up0'):
+        print('XRAY_WIRE',evidence['role'],key,json.dumps(data,separators=(',',':')),flush=True)
+
 def run_guest(work,role):
     evidence={'role':role}
     path=work/role
@@ -158,8 +175,8 @@ def run_guest(work,role):
                         ledger['count']+=len(values)
                         ledger['late']+=sum(x>=deadline for x in values)
                         ledger['last']=values[-1]
-                    elif event=='xray_part' and role in ('xray-short','xray-proof','xray-repro') and re.fullmatch('[a-z_]{1,30}',m.get('key','')) and numeric_tree(m.get('data')):
-                        evidence.setdefault('trial',{})[m['key']]=m['data']
+                    elif event=='xray_part' and role in ('xray-short','xray-proof','xray-repro'):
+                        record_xray_part(evidence,m)
                     elif event=='xray_trial' and role.startswith('xray-') and numeric_tree(m.get('data')):
                         evidence['trial']=m['data']
                     elif event=='transport_case' and m.get('protocol') in ('tls','reality') and numeric_tree(m.get('data')):

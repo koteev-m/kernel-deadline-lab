@@ -13,6 +13,7 @@ def decide(e,seconds):
     checks={}
     metrics={}
     try:
+        checks['complete_telemetry']=e.get('trial_record_errors',0)==0 and all(k in trial for k in ('uc0','up0'))
         start,t=e['armed_ticket']
         checks['guest']=e['kvm'] and e['versions']['xray']=='26.11.9' and e['versions']['kernel']=='6.8.0-48-generic' and e['versions']['abi']=='6.8.0-48.48'
         checks['deadline']=t-start==trial['duration']==seconds*10**9
